@@ -32,28 +32,6 @@ def get_intraday_data():
             prepost=True
         )
         
-        if data.empty:
-            print("No 5m data available, trying 15m intervals...")
-            data = yf.download(
-                ticker,
-                start=start_date.strftime('%Y-%m-%d'),
-                end=end_date.strftime('%Y-%m-%d'),
-                interval="15m",
-                progress=False,
-                auto_adjust=True
-            )
-        
-        if data.empty:
-            print("No 15m data available, trying 60m intervals...")
-            data = yf.download(
-                ticker,
-                start=start_date.strftime('%Y-%m-%d'),
-                end=end_date.strftime('%Y-%m-%d'),
-                interval="60m",
-                progress=False,
-                auto_adjust=True
-            )
-        
         # Debug info
         if not data.empty:
             print(f"Data retrieved: {len(data)} rows")
@@ -61,8 +39,8 @@ def get_intraday_data():
             print(f"Unique dates: {sorted(set(data.index.date))}")
             
             # Check specifically for Aug 22 data
-            aug_22_data = data[data.index.date == pd.Timestamp('2025-10-01').date()]
-            print(f"August 22 data points: {len(aug_22_data)}")
+            all_data = data[data.index.date == pd.Timestamp('2025-10-01').date()]
+            print(f"August 22 data points: {len(all_data)}")
         else:
             print("No data retrieved - empty DataFrame")
             
