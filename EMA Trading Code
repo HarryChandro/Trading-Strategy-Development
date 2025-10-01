@@ -16,9 +16,9 @@ ticker = "sol-usd"
 
 def get_intraday_data():
     try:
-        # MANUALLY SET THE DATE RANGE FOR AUGUST 22, 2025
-        start_date = datetime(2025, 9, 29)  # Start from previous day to ensure coverage
-        end_date = datetime.now() + timedelta(days=1)    # End at next day to capture all of Aug 22
+        # Getting final datapoint
+        start_date = datetime(2025, 9, 29)  
+        end_date = datetime.now() + timedelta(days=1)    
         
         print(f"Requesting data from {start_date.date()} to {end_date.date()}")
         
@@ -54,8 +54,6 @@ def get_intraday_data():
                 auto_adjust=True
             )
         
-        # REMOVED THE FILTERING SECTION - KEEP ALL DATA
-        
         # Debug info
         if not data.empty:
             print(f"Data retrieved: {len(data)} rows")
@@ -86,17 +84,15 @@ print(f"\nData available from {data.index[0]} to {data.index[-1]}")
 print(f"Data frequency: {pd.infer_freq(data.index)}")
 print(f"Number of data points: {len(data)}")
 
-# Clean and prepare data
 data.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
 data = data[['Open', 'High', 'Low', 'Close', 'Volume']]
 
-# Parameter ranges optimized for intraday trading
-s_lb = 5   # Short MA lower bound (25 minutes)
-s_ub = 30   # Short MA upper bound (105 minutes)
-l_lb = 30   # Long MA lower bound (100 minutes)  
-l_ub = 200   # Long MA upper bound (255 minutes)
+s_lb = 5   # Short MA lower bound 
+s_ub = 30   # Short MA upper bound 
+l_lb = 30   # Long MA lower bound  
+l_ub = 200   # Long MA upper bound 
 
-holding_period = 1  # Reduced holding period for intraday
+holding_period = 1  
 initial_balance = 200
 
 def calculate_success_rate(data, signals):
@@ -145,7 +141,7 @@ def backtest_strategy_ema(data, sm, lg):
     signals[(ma_sm > ma_lg) & (ma_sm.shift(1) <= ma_lg.shift(1))] = 1
     signals[(ma_sm < ma_lg) & (ma_sm.shift(1) >= ma_lg.shift(1))] = -1
     
-    # Trade simulation
+    # Trade simulation using portfolio balance
     balance = initial_balance
     position = 0
     equity_curve = []
@@ -182,8 +178,7 @@ def backtest_strategy_ema(data, sm, lg):
         'ma_lg': ma_lg,
         'equity_curve': equity_curve
     }
-
-# REPLACE THE ENTIRE GRID SEARCH SECTION WITH OPTUNA
+# Optuna optimisation on short and long ema
 def objective(trial):
     sm = trial.suggest_int('short_ema', s_lb, s_ub-1)
     lg = trial.suggest_int('long_ema', l_lb, l_ub-1)
@@ -236,7 +231,7 @@ plot_data = plot_data[['Date', 'Open', 'High', 'Low', 'Close']]
 # Plot candlesticks
 candlestick_ohlc(ax1, plot_data.values, width=0.001, colorup='limegreen', colordown='red', alpha=0.8)
 
-# Plot Exponential Moving Averages
+# Plot EMA
 result['ma_sm'].plot(ax=ax1, label=f'EMA-{sm}', color='blue', linewidth=2.5)
 result['ma_lg'].plot(ax=ax1, label=f'EMA-{lg}', color='orange', linewidth=2.5)
 
@@ -286,13 +281,12 @@ if not trades_df.empty:
 else:
     print("No trades executed")
     
-# FIXED: Add proper time check
 print(f"\n=== FINAL STATUS ===")
 print(f"Latest data point: {data.index[-1]}")
 current_time = datetime.now()
 print(f"Current time: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
-# Calculate time difference
+# Calculate time difference from latest data point to current time
 if hasattr(data.index[-1], 'tz_localize'):
     latest_data_time = data.index[-1].tz_localize(None)
 else:
@@ -303,7 +297,7 @@ hours_diff = time_diff.total_seconds() / 3600
 print(f"Data is {hours_diff:.1f} hours behind current time")
 
 if hours_diff > 4:
-    print("⚠️  Significant data delay detected!")
+    print("Significant data delay detected!")
     print("Recommendations:")
     print("1. Check Yahoo Finance website directly")
     print("2. Try a different data source")
