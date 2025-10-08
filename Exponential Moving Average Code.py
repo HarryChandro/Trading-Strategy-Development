@@ -1,0 +1,283 @@
+import yfinance as yf
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.dates import DateFormatter
+from mplfinance.original_flavor import candlestick_ohlc
+import warnings
+from matplotlib.dates import date2num
+from datetime import datetime, timedelta
+import pytz
+import optuna
+# Suppress warnings
+warnings.simplefilter(action='ignore', category=FutureWarning)
+
+ticker = "DFLI"
+
+def full_data():
+    try:
+        # Getting final datapoint
+        start_date = datetime(2025, 10, 3)  
+        end_date = datetime.now() + timedelta(days=1)    
+        
+        print(f"Requesting data from {start_date.date()} to {end_date.date()}")
+        
+        data = yf.download(
+            ticker,
+            start=start_date.strftime('%Y-%m-%d'),
+            end=end_date.strftime('%Y-%m-%d'),
+            interval="15m",
+            progress=False,
+            auto_adjust=True,
+            prepost=True
+        )
+        
+        # Debug info
+        if not data.empty:
+            print(f"Data retrieved: {len(data)} rows")
+            print(f"Date range: {data.index[0]} to {data.index[-1]}")
+            print(f"Unique dates: {sorted(set(data.index.date))}")
+            
+            # Check specifically for Aug 22 data
+            all_data = data[data.index.date == pd.Timestamp('2025-10-01').date()]
+            print(f"August 22 data points: {len(all_data)}")
+        else:
+            print("No data retrieved - empty DataFrame")
+            
+        return data
+    
+    except Exception as e:
+        print(f"Error fetching data: {e}")
+        return None
+
+# Get data with error handling
+data = full_data()
+
+if data is None or data.empty:
+    print("Failed to fetch intraday data. Please check your internet connection or try different dates.")
+    exit()
+
+# Print available date range
+print(f"\nData available from {data.index[0]} to {data.index[-1]}")
+print(f"Data frequency: {pd.infer_freq(data.index)}")
+print(f"Number of data points: {len(data)}")
+
+data.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+data = data[['Open', 'High', 'Low', 'Close', 'Volume']]
+
+s_lb = 5   # Short MA lower bound 
+s_ub = 30   # Short MA upper bound 
+l_lb = 30   # Long MA lower bound  
+l_ub = 200   # Long MA upper bound 
+
+holding_period = 1  
+initial_balance = 200
+
+def calculate_success_rate(data, signals):
+    trades = []
+    buy_price = None
+    buy_date = None
+    
+    for i in range(len(data)):
+        if signals.iloc[i] == 1 and buy_price is None:
+            buy_price = data['Close'].iloc[i]
+            buy_date = data.index[i]
+        elif signals.iloc[i] == -1 and buy_price is not None:
+            sell_price = data['Close'].iloc[i]
+            sell_date = data.index[i]
+            profit_pct = (sell_price - buy_price) / buy_price * 100
+            trades.append({
+                'Buy Date': buy_date, 'Sell Date': sell_date,
+                'Buy Price': buy_price, 'Sell Price': sell_price,
+                'Profit %': profit_pct, 'Success': profit_pct > 0
+            })
+            buy_price = None
+            buy_date = None
+    
+    if buy_price is not None:
+        sell_price = data['Close'].iloc[-1]
+        profit_pct = (sell_price - buy_price) / buy_price * 100
+        trades.append({
+            'Buy Date': buy_date, 'Sell Date': data.index[-1],
+            'Buy Price': buy_price, 'Sell Price': sell_price,
+            'Profit %': profit_pct, 'Success': profit_pct > 0
+        })
+    
+    if not trades:
+        return 0.0, []
+    
+    success_rate = sum(trade['Success'] for trade in trades) / len(trades) * 100
+    return success_rate, trades
+
+def backtest_strategy_ema(data, sm, lg):
+    # Calculate Exponential Moving Averages
+    ma_sm = data['Close'].ewm(span=sm, adjust=False).mean()
+    ma_lg = data['Close'].ewm(span=lg, adjust=False).mean()
+    
+    # Generate Signals
+    signals = pd.Series(0, index=data.index)
+    signals[(ma_sm > ma_lg) & (ma_sm.shift(1) <= ma_lg.shift(1))] = 1
+    signals[(ma_sm < ma_lg) & (ma_sm.shift(1) >= ma_lg.shift(1))] = -1
+    
+    # Trade simulation using portfolio balance
+    balance = initial_balance
+    position = 0
+    equity_curve = []
+    
+    for i in range(len(data)):
+        current_value = balance + (position * data['Close'].iloc[i] if position > 0 else 0)
+        equity_curve.append(current_value)
+        
+        if i >= len(data) - holding_period:
+            continue
+            
+        if signals.iloc[i] == 1 and position <= 0:
+            position = balance / data['Close'].iloc[i]
+            balance = 0
+        elif signals.iloc[i] == -1 and position > 0:
+            balance = position * data['Close'].iloc[i]
+            position = 0
+    
+    # Final portfolio value
+    if position > 0:
+        balance = position * data['Close'].iloc[-1]
+        equity_curve[-1] = balance
+    
+    # Calculate success rate
+    success_rate, trades = calculate_success_rate(data, signals)
+    
+    return {
+        'return_pct': (balance/initial_balance-1)*100,
+        'signal_count': len(signals[signals != 0]),
+        'success_rate': success_rate,
+        'trades': trades,
+        'signals': signals,
+        'ma_sm': ma_sm,
+        'ma_lg': ma_lg,
+        'equity_curve': equity_curve
+    }
+# Optuna optimisation on short and long ema
+def objective(trial):
+    sm = trial.suggest_int('short_ema', s_lb, s_ub-1)
+    lg = trial.suggest_int('long_ema', l_lb, l_ub-1)
+    
+    if sm >= lg:
+        return float('-inf')
+    
+    try:
+        result = backtest_strategy_ema(data.copy(), sm, lg)
+        return result['return_pct']
+    except Exception:
+        return float('-inf')
+# Add callback to print each trial
+# def print_trial(study, trial):
+#     print(f"Trial {trial.number}: short_ema={trial.params['short_ema']}, long_ema={trial.params['long_ema']}, value={trial.value:.2f}")
+
+print("Starting Optuna optimization...")
+study = optuna.create_study(direction='maximize')
+study.optimize(objective, n_trials=250, show_progress_bar=True)
+# , callbacks=[print_trial]
+
+
+# Get best parameters
+best_params = study.best_params
+sm = best_params['short_ema']
+lg = best_params['long_ema']
+result = backtest_strategy_ema(data.copy(), sm, lg)
+
+print(f"\n=== Best EMA Combination ===")
+print(f"Short EMA: {sm} periods | Long EMA: {lg} periods")
+print(f"Strategy Return: {result['return_pct']:.1f}%")
+print(f"Success Rate: {result['success_rate']:.1f}%")
+print(f"Signals Generated: {result['signal_count']}")
+print(f"Total Trades: {len(result['trades'])}")
+
+# Create figure with candlestick chart + equity + volume
+fig = plt.figure(figsize=(16, 14))
+gs = fig.add_gridspec(3, 1, height_ratios=[4, 1, 1])
+ax1 = fig.add_subplot(gs[0])
+ax2 = fig.add_subplot(gs[1])
+
+# Prepare data for candlestick plot
+plot_data = data[['Open', 'High', 'Low', 'Close']].copy()
+plot_data.reset_index(inplace=True)
+date_col_name = plot_data.columns[0]
+plot_data.rename(columns={date_col_name: 'Date'}, inplace=True)
+plot_data['Date'] = plot_data['Date'].map(date2num)
+plot_data = plot_data[['Date', 'Open', 'High', 'Low', 'Close']]
+
+# Plot candlesticks
+candlestick_ohlc(ax1, plot_data.values, width=0.001, colorup='limegreen', colordown='red', alpha=0.8)
+
+# Plot EMA
+result['ma_sm'].plot(ax=ax1, label=f'EMA-{sm}', color='blue', linewidth=2.5)
+result['ma_lg'].plot(ax=ax1, label=f'EMA-{lg}', color='orange', linewidth=2.5)
+
+# Plot signals
+buy_signals = result['signals'] == 1
+sell_signals = result['signals'] == -1
+
+ax1.plot(data.index[buy_signals], data['Close'][buy_signals], 
+        '^', markersize=12, color='lime', label='Buy', alpha=1, 
+        markeredgewidth=2, markeredgecolor='darkgreen')
+
+ax1.plot(data.index[sell_signals], data['Close'][sell_signals], 
+        'v', markersize=12, color='red', label='Sell', alpha=1, 
+        markeredgewidth=2, markeredgecolor='darkred')
+
+# Format plot
+ax1.xaxis.set_major_formatter(DateFormatter('%Y-%m-%d %H:%M'))
+ax1.set_title(f'{ticker} EMA Crossover Strategy\n{sm}/{lg} periods | Return: {result["return_pct"]:.1f}% | Success: {result["success_rate"]:.1f}%', 
+             fontsize=14, fontweight='bold', pad=20)
+ax1.set_ylabel('Price (USD)', fontsize=12)
+ax1.legend(fontsize=11, loc='upper left')
+ax1.grid(True, alpha=0.3)
+plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
+
+# Equity curve plot
+ax2.plot(data.index, result['equity_curve'], label='Equity', color='purple', linewidth=2.5)
+ax2.set_title('Strategy Equity Curve', fontsize=12, fontweight='bold')
+ax2.set_ylabel('Portfolio Value ($)', fontsize=11)
+ax2.grid(True, alpha=0.3)
+plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45)
+
+# Mark trades on equity curve
+ax2.plot(data.index[buy_signals], np.array(result['equity_curve'])[buy_signals], 
+        '^', markersize=8, color='lime', alpha=1, markeredgewidth=1.5, markeredgecolor='darkgreen')
+ax2.plot(data.index[sell_signals], np.array(result['equity_curve'])[sell_signals], 
+        'v', markersize=8, color='red', alpha=1, markeredgewidth=1.5, markeredgecolor='darkred')
+
+
+plt.tight_layout()
+plt.show()
+
+# Print trade-by-trade results
+print("\nTrade Details:")
+trades_df = pd.DataFrame(result['trades'])
+if not trades_df.empty:
+    print(trades_df.to_string())
+else:
+    print("No trades executed")
+    
+print(f"\n=== FINAL STATUS ===")
+print(f"Latest data point: {data.index[-1]}")
+current_time = datetime.now()
+print(f"Current time: {current_time.strftime('%Y-%m-%d %H:%M:%S')}")
+
+# Calculate time difference from latest data point to current time
+if hasattr(data.index[-1], 'tz_localize'):
+    latest_data_time = data.index[-1].tz_localize(None)
+else:
+    latest_data_time = data.index[-1].replace(tzinfo=None)
+
+time_diff = current_time - latest_data_time
+hours_diff = time_diff.total_seconds() / 3600
+print(f"Data is {hours_diff:.1f} hours behind current time")
+
+if hours_diff > 4:
+    print("Significant data delay detected!")
+    print("Recommendations:")
+    print("1. Check Yahoo Finance website directly")
+    print("2. Try a different data source")
+    print("3. Wait for data to update")
+    print(f"4. Check if {ticker} trades on your local exchanges during market hours")
